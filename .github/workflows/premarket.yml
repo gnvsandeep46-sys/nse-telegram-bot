@@ -1,0 +1,66 @@
+# Pre-Market Economic Snapshot: once per trading day at 08:30 IST (03:00 UTC).
+# Runs BEFORE the market opens; the script re-checks the IST window
+# (08:10-09:10), NSE holidays and the once-per-day dedupe in
+# state/premarket.json, so delayed triggers never double-send.
+name: NSE pre-market snapshot
+
+on:
+  schedule:
+    - cron: "0 3 * * 1-5"
+  workflow_dispatch: {}   # manual test runs (adds --force)
+
+permissions:
+  contents: write         # commits state/premarket.json after each run
+
+concurrency:
+  group: nse-premarket
+  cancel-in-progress: false
+
+jobs:
+  premarket:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pre-market snapshot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+        run: |
+          ARGS="--mode premarket"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS="$ARGS --force"
+          fi
+          python nse_bot.py $ARGS
+
+      - name: Persist premarket state
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state)" ]; then
+            git config user.name "nse-bot[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state
+            git commit -m "premarket state $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            ok=0
+            for i in 1 2 3; do
+              if git pull --rebase origin main && git push origin main; then
+                ok=1; break
+              fi
+              echo "push attempt $i failed, retrying in 8s"; sleep 8
+            done
+            if [ $ok -ne 1 ]; then
+              echo "::warning::state push failed after retries - next run continues from the last committed state"
+            fi
+          else
+            echo "premarket state unchanged - nothing to commit"
+          fi

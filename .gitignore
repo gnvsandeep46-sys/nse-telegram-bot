@@ -1,0 +1,18 @@
+# secrets / local env
+.env
+*.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# NOTE: state/ is NOT ignored on purpose - the scanner's state/state.json is
+# committed back to the repo by the intraday workflow after every run, so the
+# next run starts where the previous one stopped.

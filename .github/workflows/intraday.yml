@@ -1,0 +1,79 @@
+# Intraday snapshots + Phase A/B scanner: every 5 minutes, Mon-Fri, 09:15-15:30 IST
+# Cron runs in UTC. IST = UTC+5:30, so:
+#   03:45-03:55 UTC = 09:15-09:25 IST (comma list covers the open)
+#   04:00-09:55 UTC = 09:30-15:25 IST (every 5 minutes)
+#   10:00 UTC       = 15:30 IST      (final tick at close)
+# The script itself re-checks the IST window and NSE holidays, so delayed
+# triggers never send out-of-hours messages.
+#
+# The scanner keeps its 5-minute snapshot state in state/state.json. Actions
+# runners are ephemeral, so every run commits the updated state file back to
+# the repo (permissions: contents: write below). No cache expiry games - the
+# state is versioned and visible in the repo.
+name: NSE intraday snapshot
+
+on:
+  schedule:
+    - cron: "45,50,55 3 * * 1-5"
+    - cron: "*/5 4-9 * * 1-5"
+    - cron: "0 10 * * 1-5"
+  workflow_dispatch: {}   # allows manual test runs from the Actions tab
+
+permissions:
+  contents: write         # needed to commit state/state.json back after each run
+
+concurrency:
+  group: nse-intraday
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot (intraday + scanner)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+          TOP_N: "5"
+        # Manual "Run workflow" executions bypass the time gates so you can
+        # test on weekends/holidays; scheduled executions stay strict.
+        run: |
+          ARGS="--mode intraday"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS="$ARGS --force"
+          fi
+          python nse_bot.py $ARGS
+
+      - name: Persist scanner state
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state)" ]; then
+            git config user.name "nse-bot[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state
+            git commit -m "scanner state $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            ok=0
+            for i in 1 2 3; do
+              if git pull --rebase origin main && git push origin main; then
+                ok=1; break
+              fi
+              echo "push attempt $i failed, retrying in 8s"; sleep 8
+            done
+            if [ $ok -ne 1 ]; then
+              echo "::warning::state push failed after retries - next run continues from the last committed state"
+            fi
+          else
+            echo "scanner state unchanged - nothing to commit"
+          fi

@@ -1,0 +1,45 @@
+# End-of-day digest: once per trading day at 16:05 IST (10:35 UTC).
+# NSE publishes the daily bhavcopy shortly after close; the script polls the
+# bhavcopy MCP for up to ~12 minutes and sends the digest as soon as today's
+# file is ingested. On holidays the calendar/staleness gates keep it silent.
+name: NSE end-of-day digest
+
+on:
+  schedule:
+    - cron: "35 10 * * 1-5"
+  workflow_dispatch: {}   # allows manual test runs from the Actions tab
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nse-eod
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot (EOD digest)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+          TOP_N: "5"
+        run: |
+          ARGS="--mode eod"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS="$ARGS --force"
+          fi
+          python nse_bot.py $ARGS
